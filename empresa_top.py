@@ -1,82 +1,117 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 from fpdf import FPDF
-import plotly.express as px
+from datetime import datetime
 
-# --- CONFIGURACIÓN DE BASE DE DATOS ---
-conn = sqlite3.connect('gestion_empresa.db', check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS proyectos 
-             (id INTEGER PRIMARY KEY, cliente TEXT, nombre TEXT, valor REAL, estado TEXT, fecha TEXT)''')
-conn.commit()
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Sistema de Gestión Universal", layout="wide")
 
-# --- INTERFAZ ---
-st.set_page_config(page_title="ERP Industrial Top", layout="wide")
-st.sidebar.title("Navegación")
-menu = st.sidebar.radio("Ir a:", ["Dashboard", "Nueva Cotización", "Gestión de Proyectos", "Facturación"])
+# Estilos visuales
+st.markdown("""
+    <style>
+    .main { background-color: #f8f9fa; }
+    .stHeader { color: #1e3a8a; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- MÓDULO 1: DASHBOARD ---
-if menu == "Dashboard":
-    st.title("📊 Control de Mando - Proyectos")
-    data = pd.read_sql("SELECT * FROM proyectos", conn)
+st.title("💼 Generador de Cotizaciones Profesional")
+
+# --- 1. DATOS DEL CLIENTE ---
+with st.expander("👤 Información del Cliente y Proyecto", expanded=True):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        cliente = st.text_input("Cliente / Empresa", placeholder="Ej: Alcaldía de Cúcuta")
+    with col2:
+        proyecto = st.text_input("Referencia del Proyecto", placeholder="Ej: Mantenimiento General")
+    with col3:
+        fecha = st.date_input("Fecha", datetime.now())
+
+st.markdown("---")
+
+# --- 2. TABLA DE SERVICIOS (EL CORAZÓN DEL SISTEMA) ---
+st.subheader("📝 Detalle de Servicios o Productos")
+st.info("Puedes agregar servicios, repuestos, horas de mano de obra o materiales. ¡Lo que necesites!")
+
+# Creamos una estructura vacía para empezar
+if 'filas' not in st.session_state:
+    st.session_state.filas = pd.DataFrame([
+        {"Descripción": "Servicio de diagnóstico técnico", "Unidad": "Global", "Cantidad": 1.0, "Valor Unitario": 0.0}
+    ])
+
+# Editor de datos potente
+df_editor = st.data_editor(
+    st.session_state.filas,
+    num_rows="dynamic", # Permite añadir y borrar filas con el botón (+)
+    column_config={
+        "Descripción": st.column_config.TextColumn("Descripción del Servicio", width="large", required=True),
+        "Unidad": st.column_config.SelectboxColumn("Unidad", options=["Und", "Global", "Hora", "Día", "Mts", "Kg"], default="Und"),
+        "Cantidad": st.column_config.NumberColumn("Cant.", min_value=0.1, format="%.1f"),
+        "Valor Unitario": st.column_config.NumberColumn("V. Unitario ($)", min_value=0.0, format="$%d")
+    },
+    use_container_width=True,
+    key="tabla_principal"
+)
+
+# --- 3. CÁLCULOS ---
+df_editor["Subtotal"] = df_editor["Cantidad"] * df_editor["Valor Unitario"]
+total_neto = df_editor["Subtotal"].sum()
+
+col_res1, col_res2 = st.columns([2,1])
+with col_res2:
+    iva_pct = st.number_input("% IVA (Si aplica)", value=0)
+    valor_iva = total_neto * (iva_pct / 100)
+    total_final = total_neto + valor_iva
     
-    if not data.empty:
-        col1, col2 = st.columns(2)
-        with col1:
-            fig_pie = px.pie(data, names='estado', values='valor', title="Distribución de Presupuesto por Estado")
-            st.plotly_chart(fig_pie)
-        with col2:
-            fig_bar = px.bar(data, x='nombre', y='valor', color='estado', title="Valor por Proyecto")
-            st.plotly_chart(fig_bar)
+    st.markdown(f"### Subtotal: **${total_neto:,.0f}**")
+    st.markdown(f"### IVA ({iva_pct}%): **${valor_iva:,.0f}**")
+    st.markdown(f"## **TOTAL: ${total_final:,.0f}**")
+
+# --- 4. GENERACIÓN DE PDF PROFESIONAL ---
+class PDF(FPDF):
+    def header(self):
+        self.set_font('Arial', 'B', 15)
+        self.cell(0, 10, 'COTIZACIÓN COMERCIAL', 0, 1, 'C')
+        self.set_font('Arial', '', 10)
+        self.cell(0, 5, f'Fecha: {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'R')
+        self.ln(10)
+
+def generar_pdf(df, cliente, proyecto, total):
+    pdf = PDF()
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, f"Cliente: {cliente}", 0, 1)
+    pdf.cell(0, 10, f"Proyecto: {proyecto}", 0, 1)
+    pdf.ln(5)
+    
+    # Encabezados de tabla
+    pdf.set_fill_color(30, 58, 138) # Azul oscuro
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(90, 10, " Descripción", 1, 0, 'L', True)
+    pdf.cell(20, 10, " Cant.", 1, 0, 'C', True)
+    pdf.cell(35, 10, " V. Unit", 1, 0, 'C', True)
+    pdf.cell(45, 10, " Subtotal", 1, 1, 'C', True)
+    
+    # Filas de la tabla
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", '', 9)
+    for index, row in df.iterrows():
+        pdf.cell(90, 8, f" {row['Descripción']}", 1)
+        pdf.cell(20, 8, f" {row['Cantidad']}", 1, 0, 'C')
+        pdf.cell(35, 8, f" ${row['Valor Unitario']:,.0f}", 1, 0, 'R')
+        pdf.cell(45, 8, f" ${row['Subtotal']:,.0f}", 1, 1, 'R')
+    
+    pdf.ln(5)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(145, 10, "TOTAL FINAL:", 0, 0, 'R')
+    pdf.cell(45, 10, f" ${total:,.0f}", 1, 1, 'C')
+    
+    return pdf.output(dest='S').encode('latin-1')
+
+if st.button("📥 Descargar Cotización en PDF"):
+    if cliente and not df_editor.empty:
+        pdf_bytes = generar_pdf(df_editor, cliente, proyecto, total_final)
+        st.download_button(label="Click aquí para descargar", data=pdf_bytes, file_name=f"Cotizacion_{cliente}.pdf", mime="application/pdf")
     else:
-        st.info("No hay proyectos registrados aún.")
-
-# --- MÓDULO 2: COTIZADOR ---
-elif menu == "Nueva Cotización":
-    st.title("📝 Desarrollador de Propuestas Técnicas")
-    with st.form("form_cotizacion"):
-        c_cliente = st.text_input("Cliente")
-        c_proyecto = st.text_input("Nombre del Proyecto (ej. Ducto VR30)")
-        
-        st.subheader("Ingeniería de Materiales")
-        col_m1, col_m2 = st.columns(2)
-        laminas = col_m1.number_input("Cantidad de Láminas 3CR12 (4x8)", min_value=1)
-        precio_lam = col_m2.number_input("Precio por lámina", value=4000000)
-        
-        st.subheader("Mano de Obra y AIU")
-        cuadrilla = st.number_input("Nº de personas", value=3)
-        dias = st.number_input("Días de ejecución", value=12)
-        utilidad_p = st.slider("% Utilidad Sugerida", 5, 30, 15)
-        
-        btn_calc = st.form_submit_button("Calcular y Guardar")
-        
-        if btn_calc:
-            costo_directo = (laminas * precio_lam) + (cuadrilla * dias * 150000) # Ejemplo pago dia
-            total = costo_directo * (1 + (utilidad_p/100) + 0.15) # +15% Admin/Imprevistos
-            
-            c.execute("INSERT INTO proyectos (cliente, nombre, valor, estado, fecha) VALUES (?,?,?,?,?)",
-                      (c_cliente, c_proyecto, total, "En Desarrollo", "2026-01-30"))
-            conn.commit()
-            st.success(f"Propuesta Generada por ${total:,.0f}. Proyecto guardado en base de datos.")
-
-# --- MÓDULO 3: GESTIÓN ---
-elif menu == "Gestión de Proyectos":
-    st.title("⚙️ Control de Proyectos en Curso")
-    data = pd.read_sql("SELECT * FROM proyectos", conn)
-    
-    for index, row in data.iterrows():
-        with st.expander(f"{row['nombre']} - {row['cliente']}"):
-            nuevo_estado = st.selectbox("Cambiar Estado", ["En Desarrollo", "Aprobado", "Finalizado", "Cobrado"], key=row['id'])
-            if st.button("Actualizar", key=f"btn_{row['id']}"):
-                c.execute("UPDATE proyectos SET estado = ? WHERE id = ?", (nuevo_estado, row['id']))
-                conn.commit()
-                st.rerun()
-
-# --- MÓDULO 4: FACTURACIÓN ---
-elif menu == "Facturación":
-    st.title("🧾 Facturación y Cobros")
-    st.warning("⚠️ La Facturación Electrónica requiere integración con API de la DIAN (ej: Siigo o Alegra).")
-    data = pd.read_sql("SELECT * FROM proyectos WHERE estado = 'Aprobado'", conn)
-    st.write("Proyectos listos para facturar:")
-    st.table(data)
+        st.error("Por favor llena el nombre del cliente y agrega al menos un servicio.")
+  
